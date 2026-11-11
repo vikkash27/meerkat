@@ -31,7 +31,7 @@ Speak clearly and **pause about 5 seconds after each lie**. A check took 2–4 s
 **SAM:** (to camera) One-way, by the way. If I say the Eiffel Tower was built in 1999, nothing happens. Only the founder gets checked.
 > *(no burst)*
 
-**ALEX:** Fun fact, the Empire State Building is still the tallest building in the world. We're moving in next month.
+**ALEX:** Fun fact, the Empire State Building is still the tallest building in the world.
 > 💩 *It hasn't been the tallest since the 1970s.*
 
 **SAM:** Alex, I think we've seen enough. (Points at the 💩 score in the panel.)
