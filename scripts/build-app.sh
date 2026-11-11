@@ -1,14 +1,9 @@
 #!/bin/zsh
 # Bundles a menu-bar .app so macOS remembers its Screen Recording / Microphone / Accessibility grants.
-# Usage: ./scripts/build-app.sh [Meercat|BSDetector]
+# Usage: ./scripts/build-app.sh
 set -eu
 cd "$(dirname "$0")/.."
-NAME="${1:-Meercat}"
-case "$NAME" in
-  Meercat)    ID=dev.meercat.app;        MIN=14.0 ;;
-  BSDetector) ID=dev.meercat.bsdetector; MIN=26.0 ;;
-  *) echo "Unknown app: $NAME"; exit 1 ;;
-esac
+NAME=BSDetector ID=dev.meercat.bsdetector MIN=26.0
 swift build -c release --product "$NAME"
 APP="$PWD/dist/$NAME.app"
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS"

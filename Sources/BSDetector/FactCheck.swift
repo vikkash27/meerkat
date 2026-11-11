@@ -129,7 +129,7 @@ enum OpenAI {
     }
 }
 
-/// Same Keychain item as Meercat, so one key serves both apps.
+/// Keys live in the login Keychain under service "dev.meercat".
 enum Keychain {
     private static func base(_ account: String) -> [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "dev.meercat", kSecAttrAccount as String: account] }
     static func read(_ account: String = "openai") -> String? {
