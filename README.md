@@ -5,10 +5,10 @@ Meerkat watches the evidence while you watch the call. It sits on a Google Meet 
 - **Ears:** ScreenCaptureKit captures system audio, which is the other person, and your microphone, which is you. With two people on the call, the two streams tell the speakers apart.
 - **Transcript:** Apple's on-device `SpeechAnalyzer` runs one instance per speaker. Audio never leaves the Mac. Each finished sentence, plus a few lines of context, goes to OpenAI to look for claims, and only extracted claims go to Parallel.
 - **Claims:** each finished sentence goes to OpenAI, which pulls out checkable facts. Small talk and opinions are skipped.
-- **One-way:** only the other person (*Them*) is fact-checked; your own lines are context. To rehearse alone, enable **Also check me (solo test)** in the control window (or **Also Fact-check Me** in the 💩 menu). Name-drops count: "I met Muhammad Ali yesterday" is checked against the fact that he died in 2016.
+- **One-way:** only the other person (*Founder*) is fact-checked; your own lines are context. To rehearse alone, enable **Also check Investor (solo test)** in the control window (or **Also Fact-check Investor** in the 💩 menu). Name-drops count: "I met Muhammad Ali yesterday" is checked against the fact that he died in 2016.
 - **Demo:** see [DEMO.md](DEMO.md) for the investor-pitch script.
 - **Court:** a *prosecutor* and a *defender* each run their own [Parallel](https://docs.parallel.ai/search/search-quickstart) web search (one looking for evidence against the claim, one for evidence supporting it) and judge from those results. They run in parallel, and neither sees the other's answer. A claim is flagged only when the prosecutor calls it false or misleading with confidence of 0.7 or more **and** the defender concedes it can't be defended. No single agent can sign off on its own. Both judges also see the speaker's actual words as well as the extracted claim, so a question or a rebuttal isn't charged as a claim.
-- **Show:** Vision positions animated brackets around faces in the Meet window. The big tile is *Them* and the self-view is *Me*; use **Swap Me / Them Faces** for side-by-side layouts. The silent, click-through HUD uses cyan for checking, coral for contradicted claims, mint for supported claims and neutral grey for unknowns. The evidence meter is a model estimate, not a calibrated probability of lying. Bottom call controls remain clear. **Show Transcript** opens the full receipts for review. **Test BS Burst** adds a clearly labelled rehearsal with playful emoji orbits.
+- **Show:** Vision positions animated brackets around faces in the Meet window. The big tile is *Founder* and the self-view is *Investor*; use **Swap Investor / Founder Faces** for side-by-side layouts. The silent, click-through HUD uses cyan for checking, coral for contradicted claims, mint for supported claims and neutral grey for unknowns. The evidence meter is a model estimate, not a calibrated probability of lying. Bottom call controls remain clear. **Show Transcript** opens the full receipts for review. **Test BS Burst** adds a clearly labelled rehearsal with playful emoji orbits.
 - **Reliability:** only fetched URLs with usable excerpts can support a verdict; invented or missing citations remain unverified. Two sentence checks run at a time, with a bounded queue. Stopping cancels their requests. Parallel provides the two live searches; OpenAI extracts and assesses claims. The app does not currently call Parallel Decisions or Image Search.
 
 ## Run
@@ -26,9 +26,17 @@ Rehearse without a call or key: **Test overlay** in the control window (or **Tes
 
 For this checkout, after building, `./scripts/run-local.sh` loads API keys from the ignored root `.env`, falling back to `web/.env`, then launches the app. Existing environment variables take precedence. Keys are never passed as command-line arguments. Do not commit either env file.
 
-Solo test: with only you in the call, enable **Also check me (solo test)**, start listening and open the transcript. Your microphone appears as **Me** and is checked normally. Say “The Eiffel Tower was built in 1999,” then pause. For a large solo self-view, use **Swap faces** if the Me reticle is misplaced. The Them microphone path needs another participant's audio.
+Solo test: with only you in the call, enable **Also check Investor (solo test)**, start listening and open the transcript. Your microphone appears as **Investor** and is checked normally. Say “The Eiffel Tower was built in 1999,” then pause. For a large solo self-view, use **Swap faces** if the Investor reticle is misplaced. The Founder audio path needs another participant's audio.
 
-**Demo setup:** set the macOS default input to the same mic Meet uses, and keep other apps and tabs silent, because all system audio counts as *Them*. **Headphones are best.** If you're on speakers, untick **Wearing Headphones**. Your mic then also hears the other person, so a mic line that nearly copies what they said in the last 3 seconds is dropped as echo.
+**Keep permissions across rebuilds:** an ad-hoc signed build loses its Screen Recording grant on every rebuild. Make a local signing identity once and `build-app.sh` will use it:
+```sh
+printf '[req]\ndistinguished_name=dn\nx509_extensions=e\nprompt=no\n[dn]\nCN=BSDetector Local Signing\n[e]\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=critical,codeSigning\n' > /tmp/c.cnf
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/k.pem -out /tmp/c.pem -days 3650 -config /tmp/c.cnf
+openssl pkcs12 -export -legacy -inkey /tmp/k.pem -in /tmp/c.pem -out /tmp/id.p12 -passout pass:x
+security import /tmp/id.p12 -k ~/Library/Keychains/login.keychain-db -P x -T /usr/bin/codesign && rm /tmp/k.pem /tmp/id.p12
+```
+
+**Demo setup:** set the macOS default input to the same mic Meet uses, and keep other apps and tabs silent, because all system audio counts as *Founder*. **Headphones are best.** If you're on speakers, untick **Wearing Headphones**. Your mic then also hears the other person, so a mic line that nearly copies what they said in the last 3 seconds is dropped as echo.
 
 CLI: `swift run BSDetector --selftest` · `--transcribe file.aiff` · `--check "The Great Wall is visible from the Moon"` (needs both keys, and prints both court opinions and the timing).
 For a contextual CLI check, append `--context "Company: Neon; website: https://neon.com"`.

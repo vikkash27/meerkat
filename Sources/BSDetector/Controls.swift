@@ -107,7 +107,7 @@ struct ControlsView: View {
                 }
             }
 
-            Toggle("Also check me (solo test)", isOn: $call.checkMe)
+            Toggle("Also check Investor (solo test)", isOn: $call.checkMe)
                 .toggleStyle(.checkbox).font(.system(size: 11))
             HStack {
                 Button(action: onContext) {

@@ -108,7 +108,10 @@ enum FactCheck {
         let reply = try await OpenAI.respond(model: judgeModel, instructions: """
             You are a live fact-checker on a call. Today is \(today). Using only the EVIDENCE (live web search results), judge the CLAIM. \
             Check what the claim implies, not just its words: meeting someone who has died, a deal that never happened, or \
-            a title someone never held makes it false. Speech is casual: rounding, \
+            a title someone never held makes it false. A fact only the speaker could know (their own revenue, \
+            customers, team, deals) is "unverifiable" unless EVIDENCE names it. Public facts inside the same sentence \
+            (history, science, public figures, other companies) are judged normally. \
+            Speech is casual: rounding, \
             approximate numbers and loose wording count as true when the gist is right. "false" = the core is wrong. \
             "misleading" = technically defensible but leaves a clearly false impression. "unverifiable" = not enough evidence, \
             or SAID doesn't actually assert the CLAIM (a question, sarcasm, quoting or disputing someone else). \
@@ -162,26 +165,28 @@ enum FactCheck {
         result.verdict = result.verdict.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         result.sourceCount = Set(usable.map(\.url)).count
         guard validConfidence(result.confidence), ["true", "false", "misleading", "unverifiable"].contains(result.verdict),
-              let source = result.source, usable.contains(where: { $0.url == source }) else {
+              let source = cited(result.source, in: usable) else {
             result.verdict = "unverifiable"
             result.confidence = 0
             result.correction = "The returned evidence could not verify this claim."
             result.source = nil
             return result
         }
+        result.source = source
         return result
     }
 
     static func validatedDefense(_ value: Defense, evidence: [Parallel.Result]) -> Defense {
         var result = value
-        guard validConfidence(result.confidence), let source = result.source,
-              usableEvidence(evidence).contains(where: { $0.url == source }) else {
+        guard validConfidence(result.confidence),
+              let source = cited(result.source, in: usableEvidence(evidence)) else {
             result.defensible = true
             result.confidence = 0
             result.reason = "Insufficient sourced evidence to concede this claim."
             result.source = nil
             return result
         }
+        result.source = source
         return result
     }
 
@@ -209,6 +214,18 @@ enum FactCheck {
         "properties": ["defensible": ["type": "boolean"], "confidence": ["type": "number", "minimum": 0, "maximum": 1],
                        "reason": ["type": "string"], "source": ["type": ["string", "null"]]]
     ]
+
+    /// The fetched URL a judge cited, tolerating cosmetic differences (scheme, www, trailing slash, %-encoding, case).
+    static func cited(_ source: String?, in evidence: [Parallel.Result]) -> String? {
+        func key(_ s: String) -> String {
+            var k = (s.removingPercentEncoding ?? s).lowercased()
+            for p in ["https://", "http://", "www."] where k.hasPrefix(p) { k.removeFirst(p.count) }
+            while k.hasSuffix("/") { k.removeLast() }
+            return k
+        }
+        guard let source, !source.isEmpty else { return nil }
+        return evidence.first { key($0.url) == key(source) }?.url
+    }
 
     /// Models wrap JSON in prose or code fences; take the outermost object.
     static func parse<T: Decodable>(_ text: String, as: T.Type) -> T? {
