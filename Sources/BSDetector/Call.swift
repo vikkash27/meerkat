@@ -100,7 +100,6 @@ final class Call: ObservableObject {
     func heard(_ speaker: Speaker, _ raw: String, final: Bool) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard final else { live[speaker] = text; return }
-        print("\(speaker.rawValue): \(text)")
         live[speaker] = nil
         guard text.count > 1, listening else { return }
         let line = Line(speaker: speaker, text: text, at: Date())

@@ -4,6 +4,7 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct TranscriptView: View {
     @ObservedObject var call: Call
+    let toggle: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,12 +19,17 @@ struct TranscriptView: View {
                 }
             }
             .padding(12)
+            HStack {
+                Button(call.listening ? "Stop Listening" : "Start Listening", action: toggle)
+                    .disabled(call.busy)
+                Spacer()
+            }.padding(.horizontal, 12).padding(.bottom, 10)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if call.lines.isEmpty && call.live.isEmpty {
-                            Text("Start listening from the 💩 menu, then talk. Claims get checked against the web; BS gets 💩.")
+                            Text(call.listening ? "Listening for speech. Claims get checked against the web; BS gets 💩." : "Open a Meet call or click Start Listening, then talk. Claims get checked against the web; BS gets 💩.")
                                 .foregroundStyle(.secondary).padding(.top, 40)
                         }
                         ForEach(call.lines) { LineView(line: $0) }

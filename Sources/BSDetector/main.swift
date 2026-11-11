@@ -19,7 +19,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 600), styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "BS Detector"; panel.isFloatingPanel = true; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: TranscriptView(call: call))
+        panel.contentView = NSHostingView(rootView: TranscriptView(call: call, toggle: { [weak self] in self?.toggle() }))
         if let screen = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: screen.maxX - 400, y: screen.maxY - 620)) }
         panel.orderFrontRegardless()
 
@@ -38,7 +38,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func autoStart() {
-        guard !call.listening, !call.busy, let meet = CallWindow.findCall() else { return }
+        guard !call.listening, !call.busy else { return }
+        guard let meet = CallWindow.findCall() else {
+            if !userStopped { call.status = CGPreflightScreenCaptureAccess() ? "Waiting for a visible Meet window" : "Screen Recording permission needs an app restart or a fresh grant" }
+            return
+        }
         if userStopped { if meet.id == overlay.target?.id { return }; userStopped = false }
         print("auto-start on \(meet.label)")
         overlay.attach(meet)
@@ -159,6 +163,11 @@ if args.contains("--selftest") { selftest(); exit(0) }
 if let i = args.firstIndex(of: "--check"), i + 1 < args.count { run { try await factCheck(args[i + 1]) } }
 if #available(macOS 26.0, *) {
     if let i = args.firstIndex(of: "--transcribe"), i + 1 < args.count { run { try await transcribe(args[i + 1]) } }
+    let logDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
+    try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+    freopen(logDirectory.appendingPathComponent("BSDetector.log").path, "a", stdout)
+    setvbuf(stdout, nil, _IOLBF, 0)
+    print("Launch \(Date())")
     let app = NSApplication.shared
     let delegate = MainActor.assumeIsolated { App() }
     app.delegate = delegate
