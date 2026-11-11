@@ -2,7 +2,8 @@ import AVFoundation
 import ScreenCaptureKit
 import Speech
 
-enum Speaker: String, CaseIterable { case me = "Me", them = "Them" }
+/// Demo roles: you run the app as the investor; the founder is on the other end of the call.
+enum Speaker: String, CaseIterable { case me = "Investor", them = "Founder" }
 
 struct BSError: LocalizedError {
     let errorDescription: String?

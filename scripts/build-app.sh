@@ -36,6 +36,8 @@ for attribute in com.apple.FinderInfo com.apple.ResourceFork; do
     xattr -dr "$attribute" "$APP" 2>/dev/null || true
 done
 # A real identity keeps the permission grants across rebuilds; ad-hoc (-) loses them every build.
+# Without one, a local self-signed "BSDetector Local Signing" cert (see README) also keeps them: TCC pins the cert, not the build.
 IDENTITY="${MEERCAT_SIGN_IDENTITY:-$(security find-identity -p codesigning -v | awk -F\" "/Apple Development/{print \$2; exit}")}"
+[ -z "$IDENTITY" ] && security find-identity -p codesigning | grep -q "BSDetector Local Signing" && IDENTITY="BSDetector Local Signing"
 codesign --force --sign "${IDENTITY:--}" "$APP"
 echo "Built $APP"

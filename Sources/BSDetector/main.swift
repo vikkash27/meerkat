@@ -93,14 +93,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         _ = add(call.busy ? "Starting…" : call.listening ? "Stop Listening" : "Start Listening", #selector(toggle)).isEnabled = !call.busy
         _ = add("Wearing Headphones", #selector(headphones), on: call.headphones)
-        _ = add("Also Fact-check Me (rehearsal)", #selector(checkMe), on: call.checkMe)
+        _ = add("Also Fact-check Investor (rehearsal)", #selector(checkMe), on: call.checkMe)
         let windows = NSMenu()
         for w in CallWindow.all() {
             let i = windows.addItem(withTitle: String(w.label.prefix(60)), action: #selector(pick(_:)), keyEquivalent: "")
             i.target = self; i.tag = Int(w.id); i.state = w.id == overlay.target?.id ? .on : .off
         }
         menu.addItem(withTitle: "Call Window: \(overlay.target.map { String($0.label.prefix(30)) } ?? "none")", action: nil, keyEquivalent: "").submenu = windows
-        _ = add("Swap Me / Them Faces", #selector(swap), on: overlay.swap)
+        _ = add("Swap Investor / Founder Faces", #selector(swap), on: overlay.swap)
         _ = add("Show Controls", #selector(showControls))
         _ = add("Show Transcript", #selector(show))
         _ = add("Test BS Burst", #selector(test))
@@ -154,9 +154,15 @@ func selftest() {
     let search = #"{"search_id":"s1","session_id":"x","results":[{"url":"https://a.com","title":"A","publish_date":null,"excerpts":["one","two"]}],"warnings":null}"#
     struct SR: Decodable { var results: [Parallel.Result] }
     let found = (try? JSONDecoder().decode(SR.self, from: Data(search.utf8)))?.results ?? []
+    check(FactCheck.cited("http://www.A.com/", in: found) == "https://a.com" && FactCheck.cited("https://b.com", in: found) == nil, "citations match fetched urls loosely")
     check(found.first?.url == "https://a.com" && Parallel.format(found).contains("one\ntwo"), "decode + format parallel results")
     let sourced = Verdict(verdict: "false", confidence: 0.9, correction: "Correction", source: "https://a.com")
     check(FactCheck.validatedVerdict(sourced, evidence: found).flagged, "fetched citation permits a verdict")
+    let cosmetic = Verdict(verdict: "false", confidence: 0.9, correction: "Correction", source: "http://www.A.com/")
+    let canonical = FactCheck.validatedVerdict(cosmetic, evidence: found)
+    let canonicalDefense = FactCheck.validatedDefense(Defense(defensible: false, confidence: 0.9, reason: "Contradicted", source: "http://www.A.com/"), evidence: found)
+    check(canonical.source == "https://a.com" && canonicalDefense.source == "https://a.com" && FactCheck.outcome(canonical, canonicalDefense) == .bs, "both judges retain fetched URLs after citation normalization")
+    check(FactCheck.validatedVerdict(cosmetic, evidence: [Parallel.Result(url: "https://a.com", excerpts: [" "])]).source == nil, "citation normalization still requires usable evidence")
     let invalid = FactCheck.validatedVerdict(Verdict(verdict: "false", confidence: 0.9, correction: "Correction", source: "https://invented.example"), evidence: found)
     check(invalid.verdict == "unverifiable" && invalid.source == nil && !invalid.flagged, "invented citation cannot be replaced or flag a claim")
     check(FactCheck.validatedVerdict(sourced, evidence: []).verdict == "unverifiable", "no fetched evidence means unknown")
@@ -169,6 +175,18 @@ func selftest() {
     check(FactCheck.outcome(Verdict(verdict: "true", confidence: 0.4, correction: "", source: "https://a.com"), nil) == .unsure, "low-confidence support remains unknown")
     check(FactCheck.usableEvidence([Parallel.Result(url: "https://a.com", excerpts: [" \n "])]).isEmpty, "blank excerpts do not count as evidence")
     if #available(macOS 26.0, *) {
+        MainActor.assumeIsolated {
+            let rehearsal = Call()
+            var signal: LiveSignal?
+            var burstSpeaker: Speaker?
+            var burstWasRehearsal = false
+            rehearsal.onSignal = { signal = $0 }
+            rehearsal.onBS = { speaker, _, demo in burstSpeaker = speaker; burstWasRehearsal = demo }
+            rehearsal.fakeBS(.them)
+            check(signal?.speaker == .them && signal?.isDemo == true && signal?.outcome == .bs && signal?.detail != nil, "rehearsal feeds the live HUD with a labelled Founder verdict")
+            check(burstSpeaker == .them && burstWasRehearsal && rehearsal.score[.them] == 1 && rehearsal.lines.last?.checks.first?.outcome == .bs, "HUD rehearsal also updates burst, score and transcript")
+            check(!rehearsal.checkMe && Speaker.me.rawValue == "Investor" && Speaker.them.rawValue == "Founder", "founder-only checking and demo roles stay connected")
+        }
         check(Call.isEcho("the eiffel tower was built in 1999", of: "So the Eiffel Tower was built in 1999, right?"), "echo of them is dropped")
         check(!Call.isEcho("no way, that's completely wrong", of: "So the Eiffel Tower was built in 1999, right?"), "real reply is kept")
         check(Call.isEcho("Yeah.", of: "yeah totally") && !Call.isEcho("Yeah.", of: "no"), "short echoes")

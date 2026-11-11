@@ -38,7 +38,7 @@ final class Call: ObservableObject {
     private var session = 0              // bumped on start/stop; late async work from an old session is dropped
     @Published private(set) var busy = false   // a start or stop is in flight
     /// With headphones the mic only hears you. Without them it also hears the other person, so drop near-copies of their lines.
-    var headphones = true
+    @Published var headphones = true
     /// Check the founder by default; enable for solo rehearsal.
     @Published var checkMe = false
     private var startFailure: String?    // a capture/transcription error that landed while start() was still running
