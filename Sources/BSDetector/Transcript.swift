@@ -12,7 +12,7 @@ struct TranscriptView: View {
                 Circle().fill(call.listening ? .red : .secondary).frame(width: 8, height: 8)
                 Text(call.status).font(.callout).lineLimit(2)
                 Spacer()
-                ForEach(Speaker.allCases, id: \.self) { s in
+                ForEach(call.checkMe ? Speaker.allCases : [.them], id: \.self) { s in
                     Text("\(s.rawValue) 💩\(call.score[s] ?? 0)").font(.callout.monospacedDigit().bold())
                         .padding(.horizontal, 8).padding(.vertical, 3)
                         .background(s.tint.opacity(0.15), in: Capsule())

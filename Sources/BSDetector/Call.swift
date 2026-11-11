@@ -35,6 +35,8 @@ final class Call: ObservableObject {
     @Published private(set) var busy = false   // a start or stop is in flight
     /// With headphones the mic only hears you. Without them it also hears the other person, so drop near-copies of their lines.
     var headphones = true
+    /// One-way by default: only the other person (the founder) is fact-checked. Your lines are context for theirs.
+    var checkMe = false
     private var startFailure: String?    // a capture/transcription error that landed while start() was still running
     private var sessionStart = Date.distantPast
 
@@ -126,7 +128,7 @@ final class Call: ObservableObject {
     private func add(_ line: Line) {
         let context = lines.filter { $0.at <= line.at && $0.at >= sessionStart }.suffix(6).map { "\($0.speaker.rawValue): \($0.text)" }.joined(separator: "\n")
         lines.insert(line, at: lines.firstIndex { $0.at > line.at } ?? lines.endIndex)
-        guard OpenAI.key != nil, Parallel.key != nil else { return }
+        guard line.speaker == .them || checkMe, OpenAI.key != nil, Parallel.key != nil else { return }
         let current = session
         Task {
             do {
@@ -147,7 +149,7 @@ final class Call: ObservableObject {
             guard session == current else { return }
             let outcome = FactCheck.outcome(verdict, defense)
             update(line.id, check.id) { $0.verdict = verdict; $0.defense = defense; $0.outcome = outcome }
-            if outcome == .bs, let done = lines.first(where: { $0.id == line.id })?.checks.first(where: { $0.id == check.id }) {
+            if outcome == .bs, line.speaker == .them || checkMe, let done = lines.first(where: { $0.id == line.id })?.checks.first(where: { $0.id == check.id }) {
                 score[line.speaker, default: 0] += 1
                 onBS?(line.speaker, done, false)
             }

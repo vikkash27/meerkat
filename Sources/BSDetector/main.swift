@@ -56,6 +56,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         _ = add(call.busy ? "Starting…" : call.listening ? "Stop Listening" : "Start Listening", #selector(toggle)).isEnabled = !call.busy
         _ = add("Wearing Headphones", #selector(headphones), on: call.headphones)
+        _ = add("Also Fact-check Me (rehearsal)", #selector(checkMe), on: call.checkMe)
         let windows = NSMenu()
         for w in CallWindow.all() {
             let i = windows.addItem(withTitle: String(w.label.prefix(60)), action: #selector(pick(_:)), keyEquivalent: "")
@@ -72,6 +73,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func headphones() { call.headphones.toggle() }
+    @objc func checkMe() { call.checkMe.toggle(); call.objectWillChange.send() }
     @objc func toggle() {
         Task {
             if call.listening { userStopped = true; await call.stop(); return }
