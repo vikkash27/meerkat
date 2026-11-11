@@ -26,7 +26,7 @@ final class Call: ObservableObject {
     @Published private(set) var score: [Speaker: Int] = [:]
     @Published private(set) var listening = false
     @Published var status = "Not listening"
-    var onBS: ((Speaker, Check) -> Void)?
+    var onBS: ((Speaker, Check, _ rehearsal: Bool) -> Void)?
 
     private var audio: CallAudio?
     private var ears: [Transcriber] = []
@@ -35,11 +35,13 @@ final class Call: ObservableObject {
     @Published private(set) var busy = false   // a start or stop is in flight
     /// With headphones the mic only hears you. Without them it also hears the other person, so drop near-copies of their lines.
     var headphones = true
+    private var startFailure: String?    // a capture/transcription error that landed while start() was still running
+    private var sessionStart = Date.distantPast
 
     func start() async {
         guard !listening, !busy else { return }
         busy = true; defer { busy = false }
-        session += 1; seen = []
+        session += 1; seen = []; startFailure = nil; sessionStart = Date()
         let current = session
         status = "Starting…"
         do {
@@ -48,26 +50,31 @@ final class Call: ObservableObject {
             status = "Loading speech model…"
             let locale = try await Transcriber.locale()
             let failed: @MainActor (Error) -> Void = { [weak self] error in
-                guard let self, self.session == current else { return }
-                Task { await self.stop(); self.status = "Transcription stopped: \(error.localizedDescription)" }
+                Task { await self?.died(current, "Transcription stopped: \(error.localizedDescription)") }
             }
             let me = try await Transcriber(.me, locale: locale, onText: { [weak self] in self?.heard(.me, $0, final: $1) }, onError: failed)
             ears = [me]   // so a failure below still tears it down
             let them = try await Transcriber(.them, locale: locale, onText: { [weak self] in self?.heard(.them, $0, final: $1) }, onError: failed)
             let audio = CallAudio()
             audio.onBuffer = { speaker, buffer in (speaker == .me ? me : them).feed(buffer) }
-            audio.onStop = { [weak self] error in Task { @MainActor in
-                guard let self, self.session == current else { return }
-                await self.stop(); self.status = "Capture stopped: \(error.localizedDescription)"
-            } }
+            audio.onStop = { [weak self] error in Task { @MainActor in await self?.died(current, "Capture stopped: \(error.localizedDescription)") } }
             self.audio = audio; ears = [me, them]
             try await audio.start()
+            if let startFailure { throw BSError(startFailure) }
             listening = true
             status = OpenAI.key == nil || Parallel.key == nil ? "Listening · set OpenAI + Parallel keys to fact-check" : "Listening"
         } catch {
             await teardown()
             status = error.localizedDescription
         }
+    }
+
+    /// Capture or transcription died. Mid-start, let start() fail; afterwards, stop and say why.
+    private func died(_ which: Int, _ message: String) async {
+        guard session == which else { return }
+        if busy { startFailure = message; return }
+        await stop()
+        status = message
     }
 
     func stop() async {
@@ -81,6 +88,9 @@ final class Call: ObservableObject {
         let (audio, ears) = (self.audio, self.ears)
         self.audio = nil; self.ears = []
         listening = false
+        for l in lines.indices { for c in lines[l].checks.indices where lines[l].checks[c].outcome == .checking {
+            lines[l].checks[c].outcome = .failed; lines[l].checks[c].error = "Stopped before the verdict."
+        } }
         await audio?.stop()
         for ear in ears { await ear.finish() }
         live = [:]
@@ -115,7 +125,7 @@ final class Call: ObservableObject {
     }
 
     private func add(_ line: Line) {
-        let context = lines.filter { $0.at <= line.at }.suffix(6).map { "\($0.speaker.rawValue): \($0.text)" }.joined(separator: "\n")
+        let context = lines.filter { $0.at <= line.at && $0.at >= sessionStart }.suffix(6).map { "\($0.speaker.rawValue): \($0.text)" }.joined(separator: "\n")
         lines.insert(line, at: lines.firstIndex { $0.at > line.at } ?? lines.endIndex)
         guard OpenAI.key != nil, Parallel.key != nil else { return }
         let current = session
@@ -140,9 +150,10 @@ final class Call: ObservableObject {
             update(line.id, check.id) { $0.verdict = verdict; $0.defense = defense; $0.outcome = outcome }
             if outcome == .bs, let done = lines.first(where: { $0.id == line.id })?.checks.first(where: { $0.id == check.id }) {
                 score[line.speaker, default: 0] += 1
-                onBS?(line.speaker, done)
+                onBS?(line.speaker, done, false)
             }
         } catch {
+            guard session == current else { return }
             update(line.id, check.id) { $0.outcome = .failed; $0.error = error.localizedDescription }
             seen.remove(line.speaker.rawValue + FactCheck.normalize(check.claim))   // let a repeat retry it
         }
@@ -164,6 +175,6 @@ final class Call: ObservableObject {
         line.checks = [check]
         lines.append(line)
         score[speaker, default: 0] += 1
-        onBS?(speaker, check)
+        onBS?(speaker, check, true)
     }
 }

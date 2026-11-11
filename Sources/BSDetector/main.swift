@@ -22,7 +22,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let screen = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: screen.maxX - 400, y: screen.maxY - 620)) }
         panel.orderFrontRegardless()
 
-        call.onBS = { [weak self] speaker, check in self?.overlay.burst(speaker, text: check.verdict?.correction ?? "") }
+        call.onBS = { [weak self] speaker, check, rehearsal in self?.overlay.burst(speaker, text: check.verdict?.correction ?? "", rehearsal: rehearsal) }
         watch = call.$score.combineLatest(call.$listening).sink { [weak self] score, listening in
             let total = score.values.reduce(0, +)
             self?.item.button?.title = (listening ? "🔴 " : "") + "💩" + (total > 0 ? " \(total)" : "")

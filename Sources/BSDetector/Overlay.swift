@@ -75,6 +75,7 @@ final class Overlay: ObservableObject {
     struct Burst: Identifiable {
         let speaker: Speaker
         let text: String
+        var rehearsal = false
         let id = UUID()
         var start = Date()
         let particles: [Particle] = (0..<30).map { i in
@@ -105,8 +106,8 @@ final class Overlay: ObservableObject {
 
     func attach(_ window: CallWindow?) { target = window; found = []; faces = [:]; follow() }
 
-    func burst(_ speaker: Speaker, text: String) {
-        bursts.append(Burst(speaker: speaker, text: text))
+    func burst(_ speaker: Speaker, text: String, rehearsal: Bool = false) {
+        bursts.append(Burst(speaker: speaker, text: text, rehearsal: rehearsal))
         lastScan = .distantPast; follow()
         NSSound(named: "Basso")?.play()
         Task { try? await Task.sleep(for: .seconds(Self.duration)); bursts.removeAll { Date().timeIntervalSince($0.start) >= Self.duration } }
@@ -115,8 +116,9 @@ final class Overlay: ObservableObject {
     /// Track the call window's position and, about once a second, where the faces are.
     private func follow() {
         guard let t = target, let w = CallWindow.all().first(where: { $0.id == t.id }) else {
-            // No call window (rehearsal): burst over the middle of the screen instead.
-            if !bursts.isEmpty, let screen = NSScreen.main?.frame {
+            if scanning, let found = CallWindow.findCall(), found.id != target?.id { attach(found); return }   // Meet reopened
+            // Rehearsal with no call window: burst over the screen. Real bursts wait for the call window.
+            if bursts.contains(where: \.rehearsal), let screen = NSScreen.main?.frame {
                 if panel.frame != screen { panel.setFrame(screen, display: true) }
                 panel.level = .floating; panel.orderFrontRegardless()
             } else { panel.orderOut(nil) }
@@ -147,7 +149,8 @@ struct OverlayView: View {
                 for b in overlay.bursts {
                     let t = timeline.date.timeIntervalSince(b.start)
                     guard t >= 0, t < Overlay.duration else { continue }
-                    let face = overlay.faces[b.speaker] ?? Faces.fallback(b.speaker)
+                    guard b.rehearsal || overlay.target != nil else { continue }
+                    let face = (b.rehearsal && overlay.target == nil ? nil : overlay.faces[b.speaker]) ?? Faces.fallback(b.speaker)
                     Self.draw(b, face: CGRect(x: face.minX * size.width, y: face.minY * size.height, width: face.width * size.width, height: face.height * size.height), t: t, ctx: ctx, size: size)
                 }
             }
