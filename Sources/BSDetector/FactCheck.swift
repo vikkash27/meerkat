@@ -75,7 +75,7 @@ enum FactCheck {
             "correction": "<= 18 words saying what is actually true", "source": "URL from EVIDENCE"}
             """, input: "SAID: \(said)\nCLAIM: \(claim)\n\nEVIDENCE:\n\(Parallel.format(evidence))")
         guard var v = parse(reply.text, as: Verdict.self) else { throw BSError("Fact-checker gave no verdict.") }
-        if !evidence.contains(where: { $0.url == v.source }) { v.source = evidence.first?.url }   // only cite what we fetched
+        if !evidence.contains(where: { $0.url == v.source }) { v.source = nil; v.verdict = "unverifiable" }   // no fetched source, no conviction
         return v
     }
 
@@ -90,7 +90,7 @@ enum FactCheck {
             "confidence": 0.0-1.0, "reason": "<= 18 words", "source": "URL from EVIDENCE"}
             """, input: "SAID: \(said)\nCLAIM: \(claim)\n\nEVIDENCE:\n\(Parallel.format(evidence))")
         guard var d = parse(reply.text, as: Defense.self) else { throw BSError("Defense gave no answer.") }
-        if !evidence.contains(where: { $0.url == d.source }) { d.source = evidence.first?.url }
+        if !evidence.contains(where: { $0.url == d.source }) { d.source = nil }
         return d
     }
 

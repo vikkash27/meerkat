@@ -117,6 +117,7 @@ final class Overlay: ObservableObject {
     private func follow() {
         guard let t = target, let w = CallWindow.all().first(where: { $0.id == t.id }) else {
             if scanning, let found = CallWindow.findCall(), found.id != target?.id { attach(found); return }   // Meet reopened
+            if target != nil { target = nil; found = []; faces = [:] }   // window gone: forget it so real bursts stay hidden
             // Rehearsal with no call window: burst over the screen. Real bursts wait for the call window.
             if bursts.contains(where: \.rehearsal), let screen = NSScreen.main?.frame {
                 if panel.frame != screen { panel.setFrame(screen, display: true) }
