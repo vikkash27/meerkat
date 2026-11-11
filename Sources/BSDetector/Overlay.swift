@@ -67,7 +67,7 @@ enum Faces {
     }
 }
 
-// MARK: - Overlay: a click-through layer over the call window where the 💩 flies
+// MARK: - Overlay: a click-through evidence layer over the call window
 
 @MainActor
 final class Overlay: ObservableObject {
@@ -79,7 +79,7 @@ final class Overlay: ObservableObject {
         let id = UUID()
         var start = Date()
         let particles: [Particle] = (0..<30).map { i in
-            Particle(emoji: ["💩", "💩", "💩", "💩", "🐂", "🚩", "🤥"].randomElement()!,
+            Particle(emoji: ["💩", "💩", "🐂", "🚩"].randomElement()!,
                      angle: Double(i) / 30 * 2 * .pi + .random(in: -0.15...0.15), reach: .random(in: 1.0...1.9),
                      orbit: .random(in: 0.6...1.4) * (Bool.random() ? 1 : -1), tumble: .random(in: -3...3), size: .random(in: 26...52))
         }
@@ -89,6 +89,11 @@ final class Overlay: ObservableObject {
     @Published private(set) var bursts: [Burst] = []
     @Published private(set) var faces: [Speaker: CGRect] = [:]
     @Published private(set) var target: CallWindow? = nil
+    @Published private(set) var listening = false
+    @Published private(set) var signal: LiveSignal?
+    @Published private(set) var signals: [Speaker: LiveSignal] = [:]
+    @Published private(set) var signalDates: [Speaker: Date] = [:]
+    @Published private(set) var settling = false
     var swap = false { didSet { faces = Faces.assign(found, swap: swap) } }
     var scanning = false   // keep faces fresh while listening
     private var found: [CGRect] = []
@@ -106,18 +111,56 @@ final class Overlay: ObservableObject {
 
     func attach(_ window: CallWindow?) { target = window; found = []; faces = [:]; follow() }
 
+    func setListening(_ listening: Bool) {
+        self.listening = listening
+        scanning = listening
+        if !listening { signal = nil; signals = [:]; signalDates = [:]; settling = false }
+        follow()
+    }
+
+    func updateSignal(_ signal: LiveSignal) {
+        self.signal = signal
+        signals[signal.speaker] = signal
+        signalDates[signal.speaker] = Date()
+        settling = true
+        let updated = signalDates[signal.speaker]
+        Task {
+            try? await Task.sleep(for: .seconds(9))
+            guard signalDates[signal.speaker] == updated else { return }
+            settling = signalDates.values.contains { Date().timeIntervalSince($0) < 9 }
+        }
+        lastScan = .distantPast
+        follow()
+    }
+
     func burst(_ speaker: Speaker, text: String, rehearsal: Bool = false) {
         bursts.append(Burst(speaker: speaker, text: text, rehearsal: rehearsal))
+        if rehearsal {
+            let demo = signal.flatMap { $0.isDemo && $0.speaker == speaker ? $0 : nil }
+            updateSignal(LiveSignal(speaker: speaker, phase: "Rehearsal · simulated evidence",
+                                    claim: demo?.claim ?? text, outcome: demo?.outcome ?? .bs,
+                                    strength: demo?.strength, sourceCount: demo?.sourceCount ?? 0,
+                                    latency: demo?.latency, detail: demo?.detail ?? text, sourceURL: nil))
+        } else if signal == nil {
+            updateSignal(LiveSignal(speaker: speaker, phase: "Review evidence after the call", claim: text, outcome: .bs, detail: text))
+        }
         lastScan = .distantPast; follow()
-        NSSound(named: "Basso")?.play()
-        Task { try? await Task.sleep(for: .seconds(Self.duration)); bursts.removeAll { Date().timeIntervalSince($0.start) >= Self.duration } }
+        let updated = signalDates[speaker]
+        Task {
+            try? await Task.sleep(for: .seconds(Self.duration))
+            bursts.removeAll { Date().timeIntervalSince($0.start) >= Self.duration }
+            if rehearsal && !listening && signalDates[speaker] == updated {
+                signal = nil; signals[speaker] = nil; signalDates[speaker] = nil; settling = false
+                follow()
+            }
+        }
     }
 
     /// Track the call window's position and, about once a second, where the faces are.
     private func follow() {
         guard let t = target, let w = CallWindow.all().first(where: { $0.id == t.id }) else {
             if scanning, let found = CallWindow.findCall(), found.id != target?.id { attach(found); return }   // Meet reopened
-            if target != nil { target = nil; found = []; faces = [:] }   // window gone: forget it so real bursts stay hidden
+            if target != nil { target = nil; found = []; faces = [:] }   // clear a vanished call window
             // Rehearsal with no call window: burst over the screen. Real bursts wait for the call window.
             if bursts.contains(where: \.rehearsal), let screen = NSScreen.main?.frame {
                 if panel.frame != screen { panel.setFrame(screen, display: true) }
@@ -128,8 +171,8 @@ final class Overlay: ObservableObject {
         panel.level = .normal
         if target != w { target = w }
         if panel.frame != w.frame { panel.setFrame(w.frame, display: true) }
-        panel.order(.above, relativeTo: Int(w.id))   // just above the call window, so windows covering Meet still cover the 💩
-        guard (scanning || !bursts.isEmpty), !busy, Date().timeIntervalSince(lastScan) > 1 else { return }
+        panel.order(.above, relativeTo: Int(w.id))   // windows covering Meet still cover the overlay
+        guard (scanning || signal != nil || !bursts.isEmpty), !busy, Date().timeIntervalSince(lastScan) > 1 else { return }
         busy = true; lastScan = Date()
         Task {
             defer { busy = false }
@@ -144,32 +187,103 @@ final class Overlay: ObservableObject {
 
 struct OverlayView: View {
     @ObservedObject var overlay: Overlay
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var reduced: Bool { reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    private var animated: Bool {
+        !reduced && (overlay.settling || !overlay.bursts.isEmpty || overlay.signals.values.contains { $0.outcome == .checking })
+    }
+
     var body: some View {
-        TimelineView(.animation(paused: overlay.bursts.isEmpty)) { timeline in
-            Canvas { ctx, size in
-                for b in overlay.bursts {
-                    let t = timeline.date.timeIntervalSince(b.start)
-                    guard t >= 0, t < Overlay.duration else { continue }
-                    guard b.rehearsal || overlay.target != nil else { continue }
-                    let face = (b.rehearsal && overlay.target == nil ? nil : overlay.faces[b.speaker]) ?? Faces.fallback(b.speaker)
-                    Self.draw(b, face: CGRect(x: face.minX * size.width, y: face.minY * size.height, width: face.width * size.width, height: face.height * size.height), t: t, ctx: ctx, size: size)
+        GeometryReader { geometry in
+            ZStack(alignment: .topTrailing) {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animated)) { timeline in
+                    Canvas { ctx, size in
+                        var safe = ctx
+                        // Meet's microphone/camera/hang-up controls always stay clear.
+                        safe.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: max(0, size.height - 120))))
+                        for speaker in Speaker.allCases {
+                            guard let signal = overlay.signals[speaker],
+                                  let date = overlay.signalDates[speaker] else { continue }
+                            let age = timeline.date.timeIntervalSince(date)
+                            guard signal.outcome == .checking || age < 9 else { continue }
+                            let face = overlay.faces[speaker] ?? Faces.fallback(speaker)
+                            let frame = CGRect(x: face.minX * size.width, y: face.minY * size.height,
+                                               width: face.width * size.width, height: face.height * size.height)
+                            Self.drawReticle(signal, face: frame, age: reduced ? 0 : age, reduced: reduced, ctx: safe)
+                        }
+                        for b in overlay.bursts {
+                            let t = timeline.date.timeIntervalSince(b.start)
+                            guard t >= 0, t < Overlay.duration, b.rehearsal || overlay.target != nil else { continue }
+                            let face = (b.rehearsal && overlay.target == nil ? nil : overlay.faces[b.speaker]) ?? Faces.fallback(b.speaker)
+                            let frame = CGRect(x: face.minX * size.width, y: face.minY * size.height,
+                                               width: face.width * size.width, height: face.height * size.height)
+                            Self.draw(b, face: frame, t: reduced ? 0.5 : t, ctx: safe, size: size, reduced: reduced)
+                        }
+                    }
+                }
+                if geometry.size.height >= 280 && (overlay.listening || overlay.signal != nil || !overlay.bursts.isEmpty) {
+                    LiveHUD(signal: overlay.signal, listening: overlay.listening)
+                        .padding(.top, geometry.size.height > 400 ? 82 : 18)
+                        .padding(.trailing, 18)
                 }
             }
         }
         .allowsHitTesting(false)
     }
 
-    /// 0–0.45s burst out, then orbit the head, last 1.3s fall and fade.
-    static func draw(_ b: Overlay.Burst, face f: CGRect, t: Double, ctx: GraphicsContext, size: CGSize) {
+    /// Peripheral brackets and one searching arc leave the face unobscured.
+    static func drawReticle(_ signal: LiveSignal, face: CGRect, age: Double, reduced: Bool, ctx: GraphicsContext) {
+        let rect = face.insetBy(dx: -18, dy: -20)
+        let checking = signal.outcome == .checking
+        let fade = checking || reduced ? 1.0 : min(1, max(0, (9 - age) / 1.5))
+        let length = min(22, rect.width * 0.17)
+        var corners = Path()
+        for (point, dx, dy) in [
+            (CGPoint(x: rect.minX, y: rect.minY), 1.0, 1.0),
+            (CGPoint(x: rect.maxX, y: rect.minY), -1.0, 1.0),
+            (CGPoint(x: rect.minX, y: rect.maxY), 1.0, -1.0),
+            (CGPoint(x: rect.maxX, y: rect.maxY), -1.0, -1.0)
+        ] {
+            corners.move(to: CGPoint(x: point.x, y: point.y + dy * length))
+            corners.addLine(to: point)
+            corners.addLine(to: CGPoint(x: point.x + dx * length, y: point.y))
+        }
+        var g = ctx
+        g.opacity = fade * 0.90
+        g.stroke(corners, with: .color(signal.color), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+
+        if checking {
+            var arc = Path()
+            let angle = reduced ? -55 : age * 65 - 90
+            arc.addArc(center: CGPoint(x: rect.midX, y: rect.midY), radius: max(rect.width, rect.height) * 0.58,
+                       startAngle: .degrees(angle), endAngle: .degrees(angle + 48), clockwise: false)
+            g.opacity = 0.50
+            g.stroke(arc, with: .color(signal.color), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+            if !reduced {
+                var scan = Path()
+                let y = rect.minY + (sin(age * 1.1) + 1) / 2 * rect.height
+                scan.move(to: CGPoint(x: rect.minX - 4, y: y)); scan.addLine(to: CGPoint(x: rect.minX + 2, y: y))
+                scan.move(to: CGPoint(x: rect.maxX - 2, y: y)); scan.addLine(to: CGPoint(x: rect.maxX + 4, y: y))
+                g.stroke(scan, with: .color(signal.color), lineWidth: 2)
+            }
+        }
+
+        let label = checking ? "CHECKING" : signal.title.uppercased()
+        let text = Text(label).font(.system(size: 8, weight: .semibold)).foregroundStyle(signal.color)
+        let box = CGRect(x: rect.minX, y: max(6, rect.minY - 19), width: checking ? 65 : 152, height: 16)
+        g.opacity = fade
+        g.fill(Path(roundedRect: box, cornerRadius: 4), with: .color(HUDPalette.ink.opacity(0.85)))
+        g.draw(text, at: CGPoint(x: box.minX + 7, y: box.midY), anchor: .leading)
+    }
+
+    /// The playful effect is reserved for an explicit rehearsal.
+    static func draw(_ b: Overlay.Burst, face f: CGRect, t: Double, ctx: GraphicsContext, size: CGSize, reduced: Bool = false) {
+        guard b.rehearsal else { return }
         let c = CGPoint(x: f.midX, y: f.midY), radius = max(f.width, f.height) * 0.7 + 24
         let fall = max(0, t - (Overlay.duration - 1.3)), fade = 1 - fall / 1.3
         let pop = 1 - pow(1 - min(1, t / 0.45), 3)
 
-        var ring = ctx
-        ring.opacity = fade * (0.55 + 0.35 * sin(t * 10))
-        ring.stroke(Path(ellipseIn: f.insetBy(dx: -f.width * 0.25, dy: -f.height * 0.3)), with: .color(.red), lineWidth: 6)
-
-        for p in b.particles {
+        for p in reduced ? [] : b.particles {
             let a = p.angle + p.orbit * max(0, t - 0.45)
             let r = radius * p.reach * pop + sin(t * 3 + p.angle) * 6
             var g = ctx
@@ -184,17 +298,7 @@ struct OverlayView: View {
         var stamp = ctx
         stamp.opacity = fade * stampIn
         stamp.translateBy(x: min(max(c.x, 170), size.width - 170), y: max(50, f.minY - radius * 0.6))
-        stamp.rotate(by: .degrees(-8)); stamp.scaleBy(x: s, y: s)
-        stamp.draw(Text("BULLSH💩T!").font(.system(size: 46, weight: .black, design: .rounded)).foregroundStyle(.red), at: .zero)
-
-        guard !b.text.isEmpty else { return }
-        let note = ctx.resolve(Text("🧐 Actually: \(b.text)").font(.system(size: 17, weight: .semibold)).foregroundStyle(.white))
-        let m = note.measure(in: CGSize(width: 340, height: 300))
-        let box = CGRect(x: min(max(10, c.x - m.width / 2 - 12), size.width - m.width - 34),
-                         y: min(size.height - m.height - 30, f.maxY + radius * 0.55), width: m.width + 24, height: m.height + 16)
-        var card = ctx
-        card.opacity = fade * min(1, max(0, (t - 0.4) / 0.3))
-        card.fill(Path(roundedRect: box, cornerRadius: 12), with: .color(.black.opacity(0.78)))
-        card.draw(note, in: box.insetBy(dx: 12, dy: 8))
+        stamp.scaleBy(x: s, y: s)
+        stamp.draw(Text("REHEARSAL · CLAIM FLAGGED").font(.system(size: 14, weight: .bold)).foregroundStyle(HUDPalette.coral), at: .zero)
     }
 }

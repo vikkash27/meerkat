@@ -10,6 +10,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let call = Call()
     let overlay = Overlay()
     var panel: NSPanel!
+    var controls: NSWindow!
     var watch: AnyCancellable?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -20,18 +21,54 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.title = "BS Detector"; panel.isFloatingPanel = true; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
         panel.contentView = NSHostingView(rootView: TranscriptView(call: call))
         if let screen = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: screen.maxX - 400, y: screen.maxY - 620)) }
-        panel.orderFrontRegardless()
+        // The live HUD carries in-call signals; the transcript opens on demand for review.
+        controls = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        controls.title = "Meerkat — Call Controls"
+        controls.isReleasedWhenClosed = false
+        controls.contentView = NSHostingView(rootView: ControlsView(
+            call: call, overlay: overlay,
+            onToggle: { [weak self] in self?.toggle() },
+            onTest: { [weak self] in self?.test() },
+            onTranscript: { [weak self] in self?.show() },
+            onQuit: { NSApp.terminate(nil) },
+            onRefresh: { [weak self] in
+                guard let self else { return }
+                if self.overlay.target == nil { self.overlay.attach(CallWindow.findCall()) }
+            },
+            onSelect: { [weak self] id in self?.overlay.attach(CallWindow.all().first { $0.id == id }) },
+            onSwap: { [weak self] in self?.swap() },
+            onHeadphones: { [weak self] in self?.headphones() },
+            onOpenAIKey: { [weak self] in self?.setKey() },
+            onParallelKey: { [weak self] in self?.setParallelKey() }
+        ))
+        controls.center()
+
+        let mainMenu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu(title: "Meerkat")
+        let showControlsItem = applicationMenu.addItem(withTitle: "Show Controls", action: #selector(showControls), keyEquivalent: "0")
+        showControlsItem.target = self
+        applicationMenu.addItem(.separator())
+        applicationMenu.addItem(withTitle: "Quit Meerkat", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        applicationItem.submenu = applicationMenu
+        mainMenu.addItem(applicationItem)
+        NSApp.mainMenu = mainMenu
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenControls(_:)), name: Notification.Name("dev.meercat.bsdetector.showControls"), object: nil)
 
         call.onBS = { [weak self] speaker, check, rehearsal in self?.overlay.burst(speaker, text: check.verdict?.correction ?? "", rehearsal: rehearsal) }
+        call.onSignal = { [weak self] signal in self?.overlay.updateSignal(signal) }
         watch = call.$score.combineLatest(call.$listening).sink { [weak self] score, listening in
             let total = score.values.reduce(0, +)
             self?.item.button?.title = (listening ? "🔴 " : "") + "💩" + (total > 0 ? " \(total)" : "")
-            self?.overlay.scanning = listening
+            self?.overlay.setListening(listening)
         }
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         overlay.attach(CallWindow.findCall())
-
+        showControls()
     }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showControls(); return true }
+    @objc func showControls() { controls.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    @objc func reopenControls(_ notification: Notification) { showControls() }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -47,6 +84,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(withTitle: "Call Window: \(overlay.target.map { String($0.label.prefix(30)) } ?? "none")", action: nil, keyEquivalent: "").submenu = windows
         _ = add("Swap Me / Them Faces", #selector(swap), on: overlay.swap)
+        _ = add("Show Controls", #selector(showControls))
         _ = add("Show Transcript", #selector(show))
         _ = add("Test BS Burst", #selector(test))
         menu.addItem(.separator())
@@ -98,6 +136,19 @@ func selftest() {
     struct SR: Decodable { var results: [Parallel.Result] }
     let found = (try? JSONDecoder().decode(SR.self, from: Data(search.utf8)))?.results ?? []
     check(found.first?.url == "https://a.com" && Parallel.format(found).contains("one\ntwo"), "decode + format parallel results")
+    let sourced = Verdict(verdict: "false", confidence: 0.9, correction: "Correction", source: "https://a.com")
+    check(FactCheck.validatedVerdict(sourced, evidence: found).flagged, "fetched citation permits a verdict")
+    let invalid = FactCheck.validatedVerdict(Verdict(verdict: "false", confidence: 0.9, correction: "Correction", source: "https://invented.example"), evidence: found)
+    check(invalid.verdict == "unverifiable" && invalid.source == nil && !invalid.flagged, "invented citation cannot be replaced or flag a claim")
+    check(FactCheck.validatedVerdict(sourced, evidence: []).verdict == "unverifiable", "no fetched evidence means unknown")
+    let noDefense = FactCheck.validatedDefense(Defense(defensible: false, confidence: 0.9, reason: "", source: "https://invented.example"), evidence: found)
+    check(noDefense.defensible && noDefense.confidence == 0 && FactCheck.outcome(sourced, noDefense) == .overturned, "unsourced defense cannot concede")
+    for confidence in [Double.nan, Double.infinity, -0.1, 1.1] {
+        let value = Verdict(verdict: "true", confidence: confidence, correction: "", source: "https://a.com")
+        check(FactCheck.outcome(FactCheck.validatedVerdict(value, evidence: found), nil) == .unsure, "invalid confidence remains unknown: \(confidence)")
+    }
+    check(FactCheck.outcome(Verdict(verdict: "true", confidence: 0.4, correction: "", source: "https://a.com"), nil) == .unsure, "low-confidence support remains unknown")
+    check(FactCheck.usableEvidence([Parallel.Result(url: "https://a.com", excerpts: [" \n "])]).isEmpty, "blank excerpts do not count as evidence")
     if #available(macOS 26.0, *) {
         check(Call.isEcho("the eiffel tower was built in 1999", of: "So the Eiffel Tower was built in 1999, right?"), "echo of them is dropped")
         check(!Call.isEcho("no way, that's completely wrong", of: "So the Eiffel Tower was built in 1999, right?"), "real reply is kept")
@@ -146,9 +197,16 @@ if let i = args.firstIndex(of: "--check"), i + 1 < args.count { run { try await 
 if #available(macOS 26.0, *) {
     if let i = args.firstIndex(of: "--transcribe"), i + 1 < args.count { run { try await transcribe(args[i + 1]) } }
     let app = NSApplication.shared
+    let bundleID = Bundle.main.bundleIdentifier ?? "dev.meercat.bsdetector"
+    if let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first(where: { $0.processIdentifier != getpid() }) {
+        DistributedNotificationCenter.default().postNotificationName(Notification.Name("dev.meercat.bsdetector.showControls"), object: nil, userInfo: nil, deliverImmediately: true)
+        existing.activate(options: [.activateAllWindows])
+        print("Meerkat is already running; showing its controls.")
+        exit(0)
+    }
     let delegate = MainActor.assumeIsolated { App() }
     app.delegate = delegate
-    app.setActivationPolicy(.accessory)
+    app.setActivationPolicy(.regular)
     app.run()
 } else {
     print("BS Detector needs macOS 26."); exit(1)
