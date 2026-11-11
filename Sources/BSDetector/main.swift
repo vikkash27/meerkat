@@ -11,6 +11,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let overlay = Overlay()
     var panel: NSPanel!
     var watch: AnyCancellable?
+    var userStopped = false   // after a manual Stop, don't auto-start again until the next Meet window
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item.button?.title = "💩"
@@ -29,8 +30,19 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.overlay.scanning = listening
         }
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        print("screen recording: \(CGPreflightScreenCaptureAccess()), windows: \(CallWindow.all().map(\.label))")
         overlay.attach(CallWindow.findCall())
+        // Sit on the call: start listening by itself as soon as a Meet window shows up.
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in MainActor.assumeIsolated { self.autoStart() } }
+        autoStart()
+    }
 
+    func autoStart() {
+        guard !call.listening, !call.busy, let meet = CallWindow.findCall() else { return }
+        if userStopped { if meet.id == overlay.target?.id { return }; userStopped = false }
+        print("auto-start on \(meet.label)")
+        overlay.attach(meet)
+        Task { await call.start(); print("status: \(call.status)") }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -58,7 +70,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func headphones() { call.headphones.toggle() }
     @objc func toggle() {
         Task {
-            if call.listening { await call.stop(); return }
+            if call.listening { userStopped = true; await call.stop(); return }
+            userStopped = false
             if overlay.target.map({ t in CallWindow.all().contains { $0.id == t.id } }) != true { overlay.attach(CallWindow.findCall()) }
             await call.start()
         }
@@ -136,6 +149,7 @@ func factCheck(_ sentence: String) async throws {
 }
 
 let args = CommandLine.arguments
+setvbuf(stdout, nil, _IOLBF, 0)   // line-buffered, so logs show up when launched with `open --stdout`
 func run(_ work: @escaping () async throws -> Void) -> Never {
     Task { do { try await work(); exit(0) } catch { print("error: \(error.localizedDescription)"); exit(1) } }
     dispatchMain()
