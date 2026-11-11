@@ -102,6 +102,9 @@ struct ControlsView: View {
                 }
             }
 
+            Toggle("Also check me (solo test)", isOn: $call.checkMe)
+                .toggleStyle(.checkbox).font(.system(size: 11))
+
             HStack(spacing: 8) {
                 connection("OpenAI", ready: openAIReady) { onOpenAIKey(); openAIReady = OpenAI.key != nil }
                 connection("Parallel", ready: parallelReady) { onParallelKey(); parallelReady = Parallel.key != nil }

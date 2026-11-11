@@ -12,6 +12,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var panel: NSPanel!
     var controls: NSWindow!
     var watch: AnyCancellable?
+    var userStopped = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item.button?.title = "💩"
@@ -19,7 +20,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 600), styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "BS Detector"; panel.isFloatingPanel = true; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: TranscriptView(call: call))
+        panel.contentView = NSHostingView(rootView: TranscriptView(call: call, toggle: { [weak self] in self?.toggle() }))
         if let screen = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: screen.maxX - 400, y: screen.maxY - 620)) }
         // The live HUD carries in-call signals; the transcript opens on demand for review.
         controls = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -64,6 +65,21 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         overlay.attach(CallWindow.findCall())
         showControls()
+        if ProcessInfo.processInfo.environment["BS_AUTO_START"] == "1" {
+            Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in MainActor.assumeIsolated { self.autoStart() } }
+            autoStart()
+        }
+    }
+
+    func autoStart() {
+        guard !call.listening, !call.busy else { return }
+        guard let meet = CallWindow.findCall() else {
+            if !userStopped { call.status = CGPreflightScreenCaptureAccess() ? "Waiting for a visible Meet window" : "Screen Recording permission needs an app restart or a fresh grant" }
+            return
+        }
+        if userStopped { if meet.id == overlay.target?.id { return }; userStopped = false }
+        overlay.attach(meet)
+        Task { await call.start(); print("status: \(call.status)") }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showControls(); return true }
@@ -77,6 +93,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         _ = add(call.busy ? "Starting…" : call.listening ? "Stop Listening" : "Start Listening", #selector(toggle)).isEnabled = !call.busy
         _ = add("Wearing Headphones", #selector(headphones), on: call.headphones)
+        _ = add("Also Fact-check Me (rehearsal)", #selector(checkMe), on: call.checkMe)
         let windows = NSMenu()
         for w in CallWindow.all() {
             let i = windows.addItem(withTitle: String(w.label.prefix(60)), action: #selector(pick(_:)), keyEquivalent: "")
@@ -94,9 +111,11 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func headphones() { call.headphones.toggle() }
+    @objc func checkMe() { call.checkMe.toggle() }
     @objc func toggle() {
         Task {
-            if call.listening { await call.stop(); return }
+            if call.listening { userStopped = true; await call.stop(); return }
+            userStopped = false
             if overlay.target.map({ t in CallWindow.all().contains { $0.id == t.id } }) != true { overlay.attach(CallWindow.findCall()) }
             await call.start()
         }
@@ -187,6 +206,7 @@ func factCheck(_ sentence: String) async throws {
 }
 
 let args = CommandLine.arguments
+setvbuf(stdout, nil, _IOLBF, 0)
 func run(_ work: @escaping () async throws -> Void) -> Never {
     Task { do { try await work(); exit(0) } catch { print("error: \(error.localizedDescription)"); exit(1) } }
     dispatchMain()
@@ -196,6 +216,11 @@ if args.contains("--selftest") { selftest(); exit(0) }
 if let i = args.firstIndex(of: "--check"), i + 1 < args.count { run { try await factCheck(args[i + 1]) } }
 if #available(macOS 26.0, *) {
     if let i = args.firstIndex(of: "--transcribe"), i + 1 < args.count { run { try await transcribe(args[i + 1]) } }
+    let logDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
+    try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+    freopen(logDirectory.appendingPathComponent("BSDetector.log").path, "a", stdout)
+    setvbuf(stdout, nil, _IOLBF, 0)
+    print("Launch \(Date())")
     let app = NSApplication.shared
     let bundleID = Bundle.main.bundleIdentifier ?? "dev.meercat.bsdetector"
     if let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first(where: { $0.processIdentifier != getpid() }) {

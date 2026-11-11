@@ -39,6 +39,8 @@ final class Call: ObservableObject {
     @Published private(set) var busy = false   // a start or stop is in flight
     /// With headphones the mic only hears you. Without them it also hears the other person, so drop near-copies of their lines.
     var headphones = true
+    /// Check the founder by default; enable for solo rehearsal.
+    @Published var checkMe = false
     private var startFailure: String?    // a capture/transcription error that landed while start() was still running
     private var sessionStart = Date.distantPast
     private struct PendingCheck { let line: Line; let context: String; let session: Int }
@@ -110,7 +112,6 @@ final class Call: ObservableObject {
     func heard(_ speaker: Speaker, _ raw: String, final: Bool) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard final else { live[speaker] = text; return }
-        print("\(speaker.rawValue): \(text)")
         live[speaker] = nil
         guard text.count > 1, listening else { return }
         let line = Line(speaker: speaker, text: text, at: Date())
@@ -137,7 +138,7 @@ final class Call: ObservableObject {
     private func add(_ line: Line) {
         let context = lines.filter { $0.at <= line.at && $0.at >= sessionStart }.suffix(6).map { "\($0.speaker.rawValue): \($0.text)" }.joined(separator: "\n")
         lines.insert(line, at: lines.firstIndex { $0.at > line.at } ?? lines.endIndex)
-        guard OpenAI.key != nil, Parallel.key != nil else { return }
+        guard line.speaker == .them || checkMe, OpenAI.key != nil, Parallel.key != nil else { return }
         guard pendingChecks.count < 10 else {
             status = "Listening · check queue full; latest line saved for review"
             return
@@ -195,7 +196,7 @@ final class Call: ObservableObject {
             let strength: Double? = outcome == .bs ? min(verdict.confidence, defense?.confidence ?? 0) : outcome == .ok ? verdict.confidence : nil
             let detail = outcome == .overturned ? defense?.reason ?? "The evidence does not establish a contradiction." : verdict.correction
             onSignal?(LiveSignal(speaker: line.speaker, phase: "Checked", claim: check.claim, outcome: outcome, strength: strength, sourceCount: sources, latency: Date().timeIntervalSince(started), detail: detail, sourceURL: outcome == .overturned ? defense?.source : verdict.source))
-            if outcome == .bs, let done = lines.first(where: { $0.id == line.id })?.checks.first(where: { $0.id == check.id }) {
+            if outcome == .bs, line.speaker == .them || checkMe, let done = lines.first(where: { $0.id == line.id })?.checks.first(where: { $0.id == check.id }) {
                 score[line.speaker, default: 0] += 1
                 onBS?(line.speaker, done, false)
             }
