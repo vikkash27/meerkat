@@ -20,7 +20,9 @@ Meerkat watches the evidence while you watch the call. It sits on a Google Meet 
 3. Join the Meet call in Chrome. The app finds the window titled "Meet – …"; otherwise use the control window's **Call window** picker and **Refresh**.
 4. **Start Listening**. The first run downloads Apple's speech model.
 
-Rehearse without a call or key: **Test overlay** in the control window (or **Test BS Burst** in the 💩 menu). Click the Dock icon or choose **Show Controls** to reopen the controls. **Quit Meerkat** and Command-Q stop the app. A second launch brings the existing app forward.
+Rehearse without a call or key: **Test overlay** in the control window (or **Test BS Burst** in the 💩 menu). Flagged claims build a 💩 crown and a vertical meter beside the speaker, plus the latest four corrections in a compact rap sheet. The meter counts sourced flags, not a probability of lying. Rehearsal counts and receipts are labelled DEMO and kept separate from live results. Stopping or starting a session clears the overlay history; animations settle after the reaction. Click the Dock icon or choose **Show Controls** to reopen the controls. **Quit Meerkat** and Command-Q stop the app. A second launch brings the existing app forward.
+
+**Speaker context:** click **Add speaker / startup context** to enter a name, startup, website and optional notes. This context helps resolve “we” and “our company” and is included in both Parallel search objectives and independent judgments. It is explicitly unverified background, never a substitute for fetched evidence. Fields stay in memory until cleared or the app quits; queued checks retain the context they started with.
 
 For this checkout, after building, `./scripts/run-local.sh` loads API keys from the ignored root `.env`, falling back to `web/.env`, then launches the app. Existing environment variables take precedence. Keys are never passed as command-line arguments. Do not commit either env file.
 
@@ -29,6 +31,7 @@ Solo test: with only you in the call, enable **Also check me (solo test)**, star
 **Demo setup:** set the macOS default input to the same mic Meet uses, and keep other apps and tabs silent, because all system audio counts as *Them*. **Headphones are best.** If you're on speakers, untick **Wearing Headphones**. Your mic then also hears the other person, so a mic line that nearly copies what they said in the last 3 seconds is dropped as echo.
 
 CLI: `swift run BSDetector --selftest` · `--transcribe file.aiff` · `--check "The Great Wall is visible from the Moon"` (needs both keys, and prints both court opinions and the timing).
+For a contextual CLI check, append `--context "Company: Neon; website: https://neon.com"`.
 Env: `BS_MODEL` (claim extraction) and `BS_JUDGE_MODEL` (prosecutor and defender) both default to `gpt-6-luna`; `BS_SEARCH_MODE` is the Parallel mode (`turbo`, `fast` (the default), or `advanced`). Extraction, search and judgment request timeouts are 8, 6 and 10 seconds respectively. Set `BS_AUTO_START=1` in the launching environment for optional automatic startup when Meet appears; otherwise use **Start listening**.
 
 ## Two-minute demo

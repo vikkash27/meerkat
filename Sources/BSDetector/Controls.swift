@@ -17,6 +17,8 @@ struct ControlsView: View {
     let onHeadphones: () -> Void
     let onOpenAIKey: () -> Void
     let onParallelKey: () -> Void
+    let onContext: () -> Void
+    let onResetOverlay: () -> Void
 
     @State private var available: [CallWindow] = []
     @State private var openAIReady = OpenAI.key != nil
@@ -27,12 +29,15 @@ struct ControlsView: View {
          onTranscript: @escaping () -> Void, onQuit: @escaping () -> Void,
          onRefresh: @escaping () -> Void, onSelect: @escaping (CGWindowID) -> Void,
          onSwap: @escaping () -> Void, onHeadphones: @escaping () -> Void,
-         onOpenAIKey: @escaping () -> Void, onParallelKey: @escaping () -> Void) {
+         onOpenAIKey: @escaping () -> Void, onParallelKey: @escaping () -> Void,
+         onContext: @escaping () -> Void = {}, onResetOverlay: @escaping () -> Void = {}) {
         self.call = call; self.overlay = overlay
         self.onToggle = onToggle; self.onTest = onTest; self.onTranscript = onTranscript
         self.onQuit = onQuit; self.onRefresh = onRefresh; self.onSelect = onSelect
         self.onSwap = onSwap; self.onHeadphones = onHeadphones
         self.onOpenAIKey = onOpenAIKey; self.onParallelKey = onParallelKey
+        self.onContext = onContext
+        self.onResetOverlay = onResetOverlay
     }
 
     private var selection: Binding<CGWindowID?> {
@@ -104,6 +109,14 @@ struct ControlsView: View {
 
             Toggle("Also check me (solo test)", isOn: $call.checkMe)
                 .toggleStyle(.checkbox).font(.system(size: 11))
+            HStack {
+                Button(action: onContext) {
+                    Label(call.companyName.isEmpty ? "Speaker / startup context" : "Context · \(call.companyName)", systemImage: "person.text.rectangle")
+                        .font(.system(size: 11)).lineLimit(1)
+                }.buttonStyle(.bordered)
+                Spacer(minLength: 3)
+                Button("Clear overlay", action: onResetOverlay).font(.system(size: 10)).buttonStyle(.borderless)
+            }
 
             HStack(spacing: 8) {
                 connection("OpenAI", ready: openAIReady) { onOpenAIKey(); openAIReady = OpenAI.key != nil }

@@ -94,6 +94,9 @@ final class Overlay: ObservableObject {
     @Published private(set) var signals: [Speaker: LiveSignal] = [:]
     @Published private(set) var signalDates: [Speaker: Date] = [:]
     @Published private(set) var settling = false
+    @Published private(set) var flaggedLedger = FlaggedClaimLedger()
+    var flaggedClaims: [FlaggedClaim] { flaggedLedger.records }
+    var hasDemoFlags: Bool { flaggedClaims.contains { $0.isDemo } }
     var swap = false { didSet { faces = Faces.assign(found, swap: swap) } }
     var scanning = false   // keep faces fresh while listening
     private var found: [CGRect] = []
@@ -114,7 +117,28 @@ final class Overlay: ObservableObject {
     func setListening(_ listening: Bool) {
         self.listening = listening
         scanning = listening
-        if !listening { signal = nil; signals = [:]; signalDates = [:]; settling = false }
+        if !listening { signal = nil; signals = [:]; signalDates = [:]; settling = false; resetFlaggedClaims() }
+        follow()
+    }
+
+    func recordFlaggedClaim(_ record: FlaggedClaim) {
+        flaggedLedger.add(record)
+        follow()
+    }
+
+    func resetFlaggedClaims() {
+        flaggedLedger.reset()
+        bursts = []
+        if signal?.isDemo == true { signal = nil }
+        for speaker in Speaker.allCases where signals[speaker]?.isDemo == true {
+            signals[speaker] = nil; signalDates[speaker] = nil
+        }
+        follow()
+    }
+
+    func clearPresentation() {
+        flaggedLedger.reset(); bursts = []; signal = nil; signals = [:]
+        signalDates = [:]; settling = false
         follow()
     }
 
@@ -201,6 +225,17 @@ struct OverlayView: View {
                         var safe = ctx
                         // Meet's microphone/camera/hang-up controls always stay clear.
                         safe.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: max(0, size.height - 120))))
+                        for speaker in Speaker.allCases {
+                            let records = overlay.flaggedClaims.filter { $0.speaker == speaker }
+                            // A demo is its own scene, never added to the live count.
+                            let real = records.filter { !$0.isDemo }
+                            let displayed = records.last?.isDemo == true ? records.filter { $0.isDemo } : real
+                            guard !displayed.isEmpty, overlay.target != nil || displayed[0].isDemo else { continue }
+                            let face = overlay.faces[speaker] ?? Faces.fallback(speaker)
+                            let frame = CGRect(x: face.minX * size.width, y: face.minY * size.height,
+                                               width: face.width * size.width, height: face.height * size.height)
+                            BSOverlay.draw(records: displayed, face: frame, size: size, date: timeline.date, reduced: reduced, ctx: safe)
+                        }
                         for speaker in Speaker.allCases {
                             guard let signal = overlay.signals[speaker],
                                   let date = overlay.signalDates[speaker] else { continue }

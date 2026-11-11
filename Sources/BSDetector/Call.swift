@@ -29,6 +29,13 @@ final class Call: ObservableObject {
     @Published private(set) var score: [Speaker: Int] = [:]
     @Published private(set) var listening = false
     @Published var status = "Not listening"
+    @Published var speakerName = ""
+    @Published var companyName = ""
+    @Published var companyWebsite = ""
+    @Published var speakerNotes = ""
+    var speakerContext: String {
+        Self.makeSpeakerContext(speakerName: speakerName, companyName: companyName, companyWebsite: companyWebsite, speakerNotes: speakerNotes)
+    }
     var onBS: ((Speaker, Check, _ rehearsal: Bool) -> Void)?
     var onSignal: ((LiveSignal) -> Void)?
 
@@ -43,7 +50,7 @@ final class Call: ObservableObject {
     @Published var checkMe = false
     private var startFailure: String?    // a capture/transcription error that landed while start() was still running
     private var sessionStart = Date.distantPast
-    private struct PendingCheck { let line: Line; let context: String; let session: Int }
+    private struct PendingCheck { let line: Line; let context: String; let background: String; let session: Int }
     private var pendingChecks: [PendingCheck] = []
     private var checkTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -135,15 +142,29 @@ final class Call: ObservableObject {
         return Double(a.count - novel.count) / Double(a.count) >= (a.count < 4 ? 1 : 0.8)
     }
 
+    /// Explicit user background helps resolve entities; it is never verified evidence.
+    nonisolated static func makeSpeakerContext(speakerName: String, companyName: String, companyWebsite: String, speakerNotes: String) -> String {
+        let fields: [(String, String, Int)] = [("Speaker name", speakerName, 120), ("Company", companyName, 120),
+                                              ("Company website", companyWebsite, 300), ("Notes", speakerNotes, 1500)]
+        let entries = fields.compactMap { label, raw, limit -> String? in
+            let value = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(limit))
+            return value.isEmpty ? nil : "\(label): \(value)"
+        }
+        guard !entries.isEmpty else { return "" }
+        return "UNVERIFIED SPEAKER BACKGROUND (user-provided; entity resolution only, never evidence):\n" + entries.joined(separator: "\n")
+    }
+
     private func add(_ line: Line) {
-        let context = lines.filter { $0.at <= line.at && $0.at >= sessionStart }.suffix(6).map { "\($0.speaker.rawValue): \($0.text)" }.joined(separator: "\n")
+        let recent = lines.filter { $0.at <= line.at && $0.at >= sessionStart }.suffix(6).map { "\($0.speaker.rawValue): \($0.text)" }.joined(separator: "\n")
+        let background = speakerContext
+        let context = background.isEmpty ? recent : "\(background)\n\nRECENT TRANSCRIPT:\n\(recent)"
         lines.insert(line, at: lines.firstIndex { $0.at > line.at } ?? lines.endIndex)
         guard line.speaker == .them || checkMe, OpenAI.key != nil, Parallel.key != nil else { return }
         guard pendingChecks.count < 10 else {
             status = "Listening · check queue full; latest line saved for review"
             return
         }
-        pendingChecks.append(PendingCheck(line: line, context: context, session: session))
+        pendingChecks.append(PendingCheck(line: line, context: context, background: background, session: session))
         pumpChecks()
     }
 
@@ -163,7 +184,7 @@ final class Call: ObservableObject {
                     for claim in claims where seen.insert(line.speaker.rawValue + FactCheck.normalize(claim)).inserted {
                         let check = Check(claim: claim)
                         if let l = lines.firstIndex(where: { $0.id == line.id }) { lines[l].checks.append(check) }
-                        await judge(check, on: line, session: current)
+                        await judge(check, on: line, session: current, background: work.background)
                         guard session == current, !Task.isCancelled else { return }
                     }
                 } catch {
@@ -177,11 +198,11 @@ final class Call: ObservableObject {
         }
     }
 
-    private func judge(_ check: Check, on line: Line, session current: Int) async {
+    private func judge(_ check: Check, on line: Line, session current: Int, background: String) async {
         let started = Date()
         update(line.id, check.id) { $0.startedAt = started; $0.phase = "Searching the web" }
         do {
-            let (verdict, defense) = try await FactCheck.judge(check.claim, said: line.text) { [weak self] progress in
+            let (verdict, defense) = try await FactCheck.judge(check.claim, said: line.text, background: background) { [weak self] progress in
                 Task { @MainActor in
                     guard let self, self.session == current else { return }
                     guard self.lines.first(where: { $0.id == line.id })?.checks.first(where: { $0.id == check.id })?.outcome == .checking else { return }

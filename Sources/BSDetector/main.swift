@@ -11,7 +11,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let overlay = Overlay()
     var panel: NSPanel!
     var controls: NSWindow!
+    var contextPanel: NSPanel?
     var watch: AnyCancellable?
+    var listeningWatch: AnyCancellable?
     var userStopped = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -23,7 +25,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.contentView = NSHostingView(rootView: TranscriptView(call: call, toggle: { [weak self] in self?.toggle() }))
         if let screen = NSScreen.main?.visibleFrame { panel.setFrameOrigin(NSPoint(x: screen.maxX - 400, y: screen.maxY - 620)) }
         // The live HUD carries in-call signals; the transcript opens on demand for review.
-        controls = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        controls = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 490), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         controls.title = "Meerkat — Call Controls"
         controls.isReleasedWhenClosed = false
         controls.contentView = NSHostingView(rootView: ControlsView(
@@ -40,7 +42,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onSwap: { [weak self] in self?.swap() },
             onHeadphones: { [weak self] in self?.headphones() },
             onOpenAIKey: { [weak self] in self?.setKey() },
-            onParallelKey: { [weak self] in self?.setParallelKey() }
+            onParallelKey: { [weak self] in self?.setParallelKey() },
+            onContext: { [weak self] in self?.showContext() },
+            onResetOverlay: { [weak self] in self?.overlay.clearPresentation() }
         ))
         controls.center()
 
@@ -56,12 +60,21 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.mainMenu = mainMenu
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenControls(_:)), name: Notification.Name("dev.meercat.bsdetector.showControls"), object: nil)
 
-        call.onBS = { [weak self] speaker, check, rehearsal in self?.overlay.burst(speaker, text: check.verdict?.correction ?? "", rehearsal: rehearsal) }
+        call.onBS = { [weak self] speaker, check, rehearsal in
+            guard let self else { return }
+            self.overlay.recordFlaggedClaim(FlaggedClaim(id: check.id, speaker: speaker, claim: check.claim,
+                                                        correction: check.verdict?.correction ?? "",
+                                                        sourceURL: rehearsal ? nil : check.verdict?.source, isDemo: rehearsal))
+            self.overlay.burst(speaker, text: check.verdict?.correction ?? "", rehearsal: rehearsal)
+        }
         call.onSignal = { [weak self] signal in self?.overlay.updateSignal(signal) }
         watch = call.$score.combineLatest(call.$listening).sink { [weak self] score, listening in
             let total = score.values.reduce(0, +)
             self?.item.button?.title = (listening ? "🔴 " : "") + "💩" + (total > 0 ? " \(total)" : "")
+        }
+        listeningWatch = call.$listening.removeDuplicates().sink { [weak self] listening in
             self?.overlay.setListening(listening)
+            if !listening { self?.overlay.resetFlaggedClaims() }
         }
         overlay.attach(CallWindow.findCall())
         showControls()
@@ -79,12 +92,25 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if userStopped { if meet.id == overlay.target?.id { return }; userStopped = false }
         overlay.attach(meet)
+        overlay.resetFlaggedClaims()
         Task { await call.start(); print("status: \(call.status)") }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showControls(); return true }
     @objc func showControls() { controls.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     @objc func reopenControls(_ notification: Notification) { showControls() }
+    @objc func showContext() {
+        if contextPanel == nil {
+            let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 390), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "Speaker context"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: SpeakerContextView(call: call, onDone: { [weak self] in self?.contextPanel?.orderOut(nil) }))
+            window.center()
+            contextPanel = window
+        }
+        contextPanel?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
@@ -102,6 +128,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Call Window: \(overlay.target.map { String($0.label.prefix(30)) } ?? "none")", action: nil, keyEquivalent: "").submenu = windows
         _ = add("Swap Me / Them Faces", #selector(swap), on: overlay.swap)
         _ = add("Show Controls", #selector(showControls))
+        _ = add("Speaker Context…", #selector(showContext))
         _ = add("Show Transcript", #selector(show))
         _ = add("Test BS Burst", #selector(test))
         menu.addItem(.separator())
@@ -116,6 +143,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task {
             if call.listening { userStopped = true; await call.stop(); return }
             userStopped = false
+            overlay.resetFlaggedClaims()
             if overlay.target.map({ t in CallWindow.all().contains { $0.id == t.id } }) != true { overlay.attach(CallWindow.findCall()) }
             await call.start()
         }
@@ -181,6 +209,24 @@ func selftest() {
     check(Faces.assign([], swap: false).isEmpty, "no faces")
     check(Faces.assign([small], swap: false) == [.me: small], "lone self-view is me")
     check(Faces.assign([big], swap: false) == [.them: big], "lone big face is them")
+    var ledger = FlaggedClaimLedger()
+    let receipt = FlaggedClaim(id: UUID(), speaker: .them, claim: "Claim", correction: "Correction", sourceURL: "https://example.com/evidence")
+    ledger.add(receipt); ledger.add(receipt)
+    check(ledger.count(for: .them) == 1, "duplicate flag callbacks count once")
+    ledger.add(FlaggedClaim(id: UUID(), speaker: .them, claim: "Unsourced", correction: "", sourceURL: "file:///tmp/example"))
+    check(ledger.count(for: .them) == 1, "unsourced flags never inflate the meter")
+    for _ in 0..<13 { ledger.add(FlaggedClaim(id: UUID(), speaker: .them, claim: "Demo", correction: "Demo correction", sourceURL: "https://example.com", isDemo: true)) }
+    check(ledger.count(for: .them) == 1 && ledger.count(for: .them, isDemo: true) == 13, "demo and live histories stay separate")
+    check(ledger.crownCount(for: .them, isDemo: true) == 10 && ledger.last4(for: .them, isDemo: true).count == 4, "crown and rap sheet stay bounded")
+    check(ledger.last4(for: .them, isDemo: true).allSatisfy { $0.sourceURL == nil }, "demo receipts have no fabricated source links")
+    ledger.reset()
+    check(ledger.records.isEmpty, "reset clears the overlay history")
+    if #available(macOS 26.0, *) {
+        check(Call.makeSpeakerContext(speakerName: " ", companyName: "", companyWebsite: "", speakerNotes: "").isEmpty, "empty profile adds no context")
+        let background = Call.makeSpeakerContext(speakerName: " Founder ", companyName: " Neon ", companyWebsite: "https://neon.com", speakerNotes: String(repeating: "x", count: 8000))
+        check(background.contains("Company: Neon") && background.count < 2300, "speaker context is trimmed and bounded")
+        check(FactCheck.backgroundBlock(background).contains("never evidence"), "profile is labelled as unverified context")
+    }
     print("selftest ok")
 }
 
@@ -195,12 +241,12 @@ func transcribe(_ path: String) async throws {
     await ear.finish()
 }
 
-func factCheck(_ sentence: String) async throws {
-    let claims = try await FactCheck.claims(in: sentence, speaker: .them, context: "")
+func factCheck(_ sentence: String, background: String = "") async throws {
+    let claims = try await FactCheck.claims(in: sentence, speaker: .them, context: background)
     print("claims: \(claims)")
     for claim in claims {
         let started = Date()
-        let (v, d) = try await FactCheck.judge(claim, said: sentence)
+        let (v, d) = try await FactCheck.judge(claim, said: sentence, background: background)
         print("\nclaim:      \(claim)\nprosecutor: \(v)\ndefense:    \(d.map { "\($0)" } ?? "(cancelled)")\noutcome:    \(FactCheck.outcome(v, d))  [\(String(format: "%.1f", Date().timeIntervalSince(started)))s]")
     }
 }
@@ -213,7 +259,10 @@ func run(_ work: @escaping () async throws -> Void) -> Never {
 }
 
 if args.contains("--selftest") { selftest(); exit(0) }
-if let i = args.firstIndex(of: "--check"), i + 1 < args.count { run { try await factCheck(args[i + 1]) } }
+if let i = args.firstIndex(of: "--check"), i + 1 < args.count {
+    let context = args.firstIndex(of: "--context").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? ""
+    run { try await factCheck(args[i + 1], background: context) }
+}
 if #available(macOS 26.0, *) {
     if let i = args.firstIndex(of: "--transcribe"), i + 1 < args.count { run { try await transcribe(args[i + 1]) } }
     let logDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
